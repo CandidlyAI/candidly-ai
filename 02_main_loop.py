@@ -118,6 +118,14 @@ class ConversationalistAgent:
         log(f"↳ Conversationalist.other: {text[:120]}{'…' if len(text)>120 else ''}")
         return text
 
+import re
+
+THINK_RE = re.compile(r"<think>.*?</think>", flags=re.S)
+
+def strip_think(text: str) -> str:
+    if not isinstance(text, str):
+        return text
+    return THINK_RE.sub("", text).strip()
 
 class TTSAgent:
     """Agent 2: Text-to-Speech using higgs-audio-generation-Hackathon"""
@@ -220,15 +228,16 @@ class STTAgent:
                 temperature=0.0,
                 # No response_format lock here; we just want text back
             )
-            transcript = self._extract_text(resp)
-            log(f"↳ STT.omni transcript: {transcript[:120]}{'…' if len(transcript)>120 else ''}")
-            print(f"✓ Transcribed (omni): {transcript}")
+            raw = self._extract_text(resp)
+            transcript = strip_think(raw)
+            log(f"↳ STT.transcript: {transcript[:120]}{'…' if len(transcript)>120 else ''}")
+            print(f"✓ Transcribed: {transcript}")
             return transcript
 
         # === Default backend: original STT model ===
         resp = api_call_with_logs(
             "STT.chat",
-            lambda **kw: call_with_retries(self.client.chat.completions.create, **kw),
+            self.client.chat.completions.create,
             model="higgs-audio-understanding-Hackathon",
             messages=[
                 {"role": "system", "content": system_prompt},
