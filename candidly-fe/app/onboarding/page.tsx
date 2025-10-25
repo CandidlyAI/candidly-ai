@@ -1,15 +1,33 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { useUploadAudio } from "@/app/hooks/use-upload-audio";
 import { blobToWav } from "@/app/lib/encodeWav";
+import { usePollAudio } from "../hooks/usePollAudio";
 
 export default function LandingPage() {
   const [isRecording, setIsRecording] = useState(false);
+  const [isWaitingForChatBot, setIsWaitingForChatBot] = useState(false)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const uploadAudio = useUploadAudio();
+
+  const { data: audioUrl, isFetching } = usePollAudio("recording.wav", isWaitingForChatBot)
+
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  
+  // Auto-play when audio URL changes
+  useEffect(() => {
+    if (audioUrl && audioRef.current) {
+      audioRef.current.load();
+      audioRef.current.play().then(() => {
+        setIsWaitingForChatBot(false)
+      }).catch(() => {
+        console.warn("Autoplay blocked by browser.");
+      });
+    }
+  }, [audioUrl]);
 
   async function startRecording() {
     try {
@@ -36,10 +54,13 @@ export default function LandingPage() {
     }
   }
 
+  console.log(isWaitingForChatBot)
+
   function stopRecording() {
     mediaRecorderRef.current?.stop();
     mediaRecorderRef.current?.stream.getTracks().forEach((track) => track.stop());
     setIsRecording(false);
+    setIsWaitingForChatBot(true)
   }
 
   return (
@@ -62,7 +83,7 @@ export default function LandingPage() {
             : "Click to start recording (saves as WAV)."}
         </p>
 
-        {uploadAudio.isLoading && <p className="mt-4 text-sm">Uploading...</p>}
+        {uploadAudio.isPending && <p className="mt-4 text-sm">Uploading...</p>}
         {uploadAudio.isSuccess && (
           <p className="mt-4 text-green-500">
             ✅ Uploaded: {uploadAudio.data.filename}

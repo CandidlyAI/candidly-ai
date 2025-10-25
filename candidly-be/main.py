@@ -2,6 +2,8 @@ from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
 from pathlib import Path
+import random
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
 
@@ -32,3 +34,30 @@ async def upload_audio(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, buffer)
 
     return {"status": "success", "filename": file.filename, "path": str(file_path)}
+
+
+audio_ready = False
+
+# Serve uploaded audio files from /uploads
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
+@app.get("/download-audio/{filename}")
+def download_audio(filename: str):
+    """
+    Returns the public URL of a saved WAV file.
+    """
+    if not audio_ready:
+        return { "url": "" }
+    
+    return {"url": f"http://localhost:8000/uploads/{filename}"}
+
+
+SCENARIOS = [
+    "You're talking to an upset customer who wants a refund.",
+    "You're onboarding a new user for your product.",
+    "You're resolving a technical issue with a client.",
+    "You're assisting a customer who received the wrong order.",
+]
+@app.get("/scenario")
+def get_scenario():
+    return {"scenario": random.choice(SCENARIOS)}
