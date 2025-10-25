@@ -1,0 +1,6 @@
+# initial_sample_conversation requirements
+openai>=1.0.0
+sounddevice>=0.4.6
+scipy>=1.10.0
+numpy>=1.24.0
+simpleaudio>=1.0.4
