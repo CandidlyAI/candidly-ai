@@ -30,7 +30,7 @@ system_prompt = {
         "This part is the onboarding process of an app. The app is to help users navigate difficult conversation. So it helps user practice with an AI chatbot that act as a stakeholder to the user" 
         "Your job is to gather information about the user. And your response is gonna be passed in as a template to another AI agent." "In this case you should gather the role of the user, the role that an AI should play, for example, user could be a customer service agent and AI could be a difficult customer" 
         "You should also try to get a scenario that the user trying to simulate if they have one. However, don't press the user if they don't have any scenario if they don't have one" 
-        "Your response should be in the JSON format with { \"role\": \"the role of the users\", \"ai_role\": \"the role of AI\", \"is_done\": <boolean indicating if you are done collecting information>, \"scenario\": \"scenario I want to generate\", \"next_prompt\": \"If not done, next_prompt to collect the information\", \"transcription\": \"transcription of what the user said\" }. Output nothing else"
+        "Your response should be in the JSON format with { \"role\": \"the role of the users\", \"ai_role\": \"the role of AI\", \"is_done\": <boolean indicating if you are done collecting information>, \"scenario\": \"scenario I want to generate if user has one, empty string otherwise\", \"next_prompt\": \"If not done, next_prompt to collect the information\", \"transcription\": \"transcription of what the user said\" }. Output nothing else"
     )
 }
 
