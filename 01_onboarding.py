@@ -180,10 +180,10 @@ def run_onboarding(
         transcription = parsed.get("transcription", "")
 
         print(f"\n🤖 Assistant: {next_prompt}\n")
-        try:
-            speak_text(next_prompt)
-        except Exception as _e:
-            print(f"[warn] speak_text failed: {_e}")
+        # try:
+        #     speak_text(next_prompt)
+        # except Exception as _e:
+        #     print(f"[warn] speak_text failed: {_e}")
 
         # Keep a light text history for coherence
         messages.append({
