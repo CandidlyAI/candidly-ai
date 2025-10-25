@@ -210,3 +210,4 @@ data/
 
 *.wav
 *.txt
+/archive/
