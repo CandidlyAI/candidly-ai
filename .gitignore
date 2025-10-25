@@ -208,5 +208,5 @@ __marimo__/
 data/
 .DS_Store
 
-.wav
-.txt
+*.wav
+*.txt
