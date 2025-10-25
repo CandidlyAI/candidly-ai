@@ -391,7 +391,7 @@ class UserToneAnalyzerAgent:
                     ],
                 },
             ],
-            max_tokens=64,
+            max_tokens=512,
             temperature=0.2,
         )
         content = resp.choices[0].message.content
