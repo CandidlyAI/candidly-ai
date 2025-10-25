@@ -405,8 +405,9 @@ class UserToneAnalyzerAgent:
         )
         content = resp.choices[0].message.content
         tone = content.strip() if isinstance(content, str) else str(content)
-        log(f"← Tone.analyze: {tone}")
-        return str(content)
+        tone_clean = strip_think(tone)
+        log(f"← Tone.analyze: {tone_clean}")
+        return str(tone_clean)
 
 def run_conversation_cycle(num_turns: int = 3, recording_duration: int = 5, system_prompt: Optional[str] = None):
     """
