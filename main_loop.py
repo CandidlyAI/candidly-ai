@@ -1,29 +1,63 @@
-from openai import OpenAI
+from openai import OpenAI, RateLimitError
 import base64
 import os
 import sounddevice as sd
 import soundfile as sf
 import json
+import re
+import threading
+from queue import Queue
+import time
 
 BOSON_API_KEY = os.getenv("BOSON_API_KEY")
 client = OpenAI(api_key=BOSON_API_KEY, base_url="https://hackathon.boson.ai/v1")
 
+def retry_with_exponential_backoff(
+    func,
+    max_retries=5,
+    initial_delay=1,
+    exponential_base=2,
+    jitter=True,
+):
+    """Retry a function with exponential backoff."""
+    def wrapper(*args, **kwargs):
+        num_retries = 0
+        delay = initial_delay
+        
+        while True:
+            try:
+                return func(*args, **kwargs)
+            except RateLimitError as e:
+                num_retries += 1
+                if num_retries > max_retries:
+                    raise Exception(f"Max retries ({max_retries}) exceeded: {e}")
+                
+                delay *= exponential_base * (1 + jitter * (0.5 - time.time() % 1))
+                print(f"⏳ Rate limit hit. Retrying in {delay:.2f} seconds... (attempt {num_retries}/{max_retries})")
+                time.sleep(delay)
+            except Exception as e:
+                raise e
+    
+    return wrapper
 
 class ConversationalistAgent:
     """Agent 1: Generates conversational responses"""
     
-    def __init__(self, client):
+    def __init__(self, client, system_prompt):
         self.client = client
-    
-    def generate_response(self, conversation_history: list) -> str:
-        """Given conversation history, generate the next assistant message"""
-        system_prompt = (
-            "You are a helpful assistant. You are supposed to pretend that you are a difficult customer complaining about an order that didn't arrive. Generate the customer response, don't output anything else, just the text. You are talking to a customer service manager in the store\n"
-            "Generate brief, natural customer responses in 1-2 sentences only. Keep it conversational and concise. "
-
+        self.system_prompt = system_prompt or (
+            "You are a helpful assistant. You are supposed to pretend that you are a difficult customer "
+            "complaining about an order that didn't arrive. Generate the customer response — nothing else, "
+            "just the text. You are talking to a customer service manager at the store. "
+            "Generate brief, natural customer responses in 1-2 sentences only. Keep it conversational and concise."
         )
         
-        messages = [{"role": "system", "content": system_prompt}] + conversation_history
+    @retry_with_exponential_backoff
+    def generate_response(self, conversation_history: list) -> str:
+        """Given conversation history, generate the next assistant message"""
+
+        
+        messages = [{"role": "system", "content": self.system_prompt}] + conversation_history
         
         resp = self.client.chat.completions.create(
             model="Qwen3-32B-non-thinking-Hackathon",  # Using the available model
@@ -44,6 +78,56 @@ class ConversationalistAgent:
         
         return str(response_text)
 
+    @retry_with_exponential_backoff
+    def extract_emotion(self, conversation_history: list) -> str:
+        """
+        Generate a one-word emotion label describing the AI's tone.
+        If base case (one system + one user message saying "Generate the first complaint, do not output anything else"),
+        infer emotion from system prompt only.
+        Otherwise, predict the next emotional state of the assistant based on the last user-assistant exchange.
+        """
+
+        emotions = ["happy", "angry", "sad", "afraid", "disgusted", "melancholic", "surprised", "calm"]
+
+        # --- Otherwise: predict next state based on last user–assistant exchange ---
+        user_last = ""
+        ai_text = ""
+
+        # Find the last assistant and user messages in order
+        for msg in reversed(conversation_history):
+            if msg["role"] == "assistant" and not ai_text:
+                ai_text = msg["content"]
+            elif msg["role"] == "user" and not user_last:
+                user_last = msg["content"]
+            if ai_text and user_last:
+                break
+
+        # If we don’t have both, fallback gracefully
+        if not (ai_text and user_last):
+            return "neutral"
+
+        system_prompt = (
+            "You are an emotion classifier. Given the last exchange between the user and assistant, "
+            "predict the *next emotional state* of the assistant. "
+            "Output ONE WORD ONLY (lowercase). "
+            f"Choose from this list only: {', '.join(emotions)}."
+        )
+
+        dialogue_context = f"User: {user_last}\nAssistant: {ai_text}"
+
+        resp = self.client.chat.completions.create(
+            model="Qwen3-32B-non-thinking-Hackathon",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": dialogue_context},
+            ],
+            max_tokens=5,
+            temperature=0.0,
+        )
+
+        emotion = resp.choices[0].message.content.strip().lower()
+        emotion = re.findall(r'\b[a-z]+\b', emotion)
+        return emotion[0] if emotion else "neutral"
 
 class TTSAgent:
     """Agent 2: Text-to-Speech using higgs-audio-generation-Hackathon"""
@@ -51,6 +135,7 @@ class TTSAgent:
     def __init__(self, client):
         self.client = client
     
+    @retry_with_exponential_backoff
     def synthesize_speech(self, text: str, output_path: str) -> str:
         """Convert text to speech and save to file"""
         system = (
@@ -99,6 +184,7 @@ class STTAgent:
     def __init__(self, client):
         self.client = client
     
+    @retry_with_exponential_backoff
     def transcribe_audio(self, audio_path: str) -> str:
         """Transcribe audio file to text"""
         audio_b64, fmt = self._encode_audio(audio_path)
@@ -175,7 +261,8 @@ class UserToneAnalyzerAgent:
         """Encode audio file to base64 format."""
         with open(file_path, "rb") as audio_file:
             return base64.b64encode(audio_file.read()).decode("utf-8")
-        
+
+    @retry_with_exponential_backoff    
     def analyze_tone(self, audio_path):
         audio_base64 = self.encode_audio_to_base64(audio_path)
         file_format = audio_path.split(".")[-1]
@@ -183,7 +270,13 @@ class UserToneAnalyzerAgent:
         resp = client.chat.completions.create(
             model="Qwen3-Omni-30B-A3B-Thinking-Hackathon",
             messages=[
-                {"role": "system", "content": "You are a helpful assistant. Describe the sentiment of the audio."},
+                {"role": "system", "content": """
+                 You are an expert audio analyst. Analyze how the user said what they said in 3-4 concise sentences. Include: overall tone and sentiment (positive/negative/neutral with intensity), speech characteristics (pace, volume, clarity, pitch), emotional indicators (energy level, confidence, stress/frustration/happiness), and communication style (pauses, hesitations, emphasis). 
+                 Be specific and direct.
+
+                 Example: "Audio of user speaking" -> "The speaker's tone is neutral with a subdued, slightly hesitant sentiment, suggesting a lack of confidence or urgency in the statement. Their speech is delivered at a slow, deliberate pace with moderate volume and clear articulation, but features a consistently low, flat pitch that lacks energetic inflection. There are no signs of stress or frustration, though the measured delivery conveys a low energy level and cautious, almost robotic, communication style. The slight pause after "We are" and absence of emphasis reinforce the impression of a routine, non-emotional update rather than a passionate or confident response."
+                 """
+                },
             {
                 "role": "user",
                 "content": [
@@ -197,11 +290,23 @@ class UserToneAnalyzerAgent:
                 ],
             },
             ],
-            max_tokens=256,
+            max_tokens=1024,
             temperature=0.2,
         )
-        print(resp.choices[0].message.content)
+        processed = re.split(r'</think>\s*', resp.choices[0].message.content, maxsplit=1)[-1]
+        processed = processed.strip()
+        print(processed)
+        return processed
     
+def analyze_tone_background(utaa, audio_path, result_queue, turn_num):
+    """Background worker function for tone analysis"""
+    try:
+        print(f"🎭 [Background] Starting tone analysis for turn {turn_num}...")
+        tone_sentiment = utaa.analyze_tone(audio_path)
+        result_queue.put((turn_num, tone_sentiment))
+    except Exception as e:
+        print(f"✗ [Background] Tone analysis failed: {e}")
+        result_queue.put((turn_num, None))
 
 def run_conversation_cycle(num_turns: int = 3, recording_duration: int = 5):
     """
@@ -234,15 +339,23 @@ def run_conversation_cycle(num_turns: int = 3, recording_duration: int = 5):
     print("="*60)
 
     emotions = []
+    tone_threads = []
+    tone_results_queue = Queue()
+
+    res = []
     
     for turn in range(num_turns):
         print(f"\n{'='*60}")
         print(f"TURN {turn + 1}: AI RESPONSE")
         print(f"{'='*60}")
         
+        # 0. extract emotion
+        emotion = conversationalist.extract_emotion(conversation)
+
         # 1. Conversationalist generates response
         print("💭 Generating response...")
         ai_text = conversationalist.generate_response(conversation)
+        
         print(f"📝 AI: {ai_text}")
         
         # 2. Append to conversation
@@ -256,6 +369,10 @@ def run_conversation_cycle(num_turns: int = 3, recording_duration: int = 5):
         
         # Check if we should continue
         if turn == num_turns - 1:
+            res.append({
+                "ai_text": ai_text,
+                "emotion": emotion
+            })    
             break
         
         print(f"\n{'='*60}")
@@ -269,24 +386,57 @@ def run_conversation_cycle(num_turns: int = 3, recording_duration: int = 5):
         user_audio_path = f"./test_wav/user_input_{turn + 1}.wav"
         # 5. STT: Transcribe audio
         print("📝 Transcribing...")
-        user_text = stt.transcribe_audio(user_audio_path)
+        # user_text = stt.transcribe_audio(user_audio_path)
+        user_text = "Oh, I'm sorry about that."
         
-        tone_sentiment = utaa.analyze_tone(user_audio_path)
-        emotions.append(tone_sentiment)
+        # tone_sentiment = utaa.analyze_tone(user_audio_path)
+        # emotions.append(tone_sentiment)
+        # 6. Start tone analysis in background thread (NON-BLOCKING)
+        tone_thread = threading.Thread(
+            target=analyze_tone_background,
+            args=(utaa, user_audio_path, tone_results_queue, turn + 1),
+            daemon=True
+        )
+        tone_thread.start()
+        tone_threads.append(tone_thread)
         
-        # 6. Append to conversation
+        # 7. Append to conversation
         conversation.append({"role": "user", "content": user_text})
-    
+        
+        res.append({
+            "user_text": user_text,
+            "ai_text": ai_text,
+            "emotion": emotion
+        })
+
+
+
     print("\n" + "="*60)
     print("CONVERSATION COMPLETE")
     print("="*60)
+
+
+
+    # Wait for all tone analysis threads to complete
+    for thread in tone_threads:
+        thread.join()
+    
+    # Collect results from queue
+    while not tone_results_queue.empty():
+        turn_num, tone_sentiment = tone_results_queue.get()
+        if tone_sentiment:
+            emotions.append(tone_sentiment)
     print("\n📋 Full conversation history:")
-    print(conversation)
-    print(emotions)
+    # print(conversation)
+    # print(emotions)
     for i, msg in enumerate(conversation):
         role_emoji = "🤖" if msg['role'] == "assistant" else "👤"
         print(f"{i+1}. {role_emoji} [{msg['role'].upper()}]: {msg['content']}")
 
+    print(res)
+
+    print(len(res))
+    print(len(emotions))
 
 if __name__ == "__main__":
     # Run conversation with 3 turns and 5-second recordings

@@ -4,7 +4,9 @@ import time
 from scipy.io.wavfile import write as wav_write
 import openai
 import re
+import sys
 from pydub import AudioSegment
+from pathlib import Path
 
 # ---------------- Config ----------------
 SAMPLE_RATE = 16000     # 16 kHz mono is common for ASR
@@ -183,6 +185,9 @@ def tts_generate_speech_chunked(
     Calls your tts_generate_speech() on chunks, then concatenates them.
     Returns final audio path. Requires pydub for concatenation; if missing, saves sequential files.
     """
+    out_dir = Path(out_path_base).parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     text = (reply_text or "").strip()
     if not text:
         raise ValueError("Empty reply_text for TTS")
