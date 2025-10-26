@@ -9,6 +9,7 @@ from onboarding import REC_PATH, onboard
 from conversation_logic import build_system_prompt_from_onboarding, process_conversation_turn
 from openai import OpenAI
 import os
+from evaluate import EvaluationResult, evaluate_conversation
 
 app = FastAPI()
 
@@ -92,3 +93,19 @@ async def conversation_turn(file: UploadFile = File(...)):
 
     result = process_conversation_turn(client, REC_PATH)
     return result
+
+
+@app.post("/conversation/evaluate")
+async def evaluate_conversation_endpoint(onboarding: dict | None = None):
+    """
+    Evaluate the stored conversation using the global conversation_state.
+    Optionally takes onboarding metadata (role, ai_role, scenario).
+    """
+    convo_copy = {
+        "conversation": conversation["conversation"],
+        "emotions": conversation["emotions"],
+    }
+
+    result: EvaluationResult = evaluate_conversation(convo_copy, onboarding=onboarding)
+    return result.__dict__
+

@@ -7,8 +7,10 @@ import { Button } from "@/components/ui/button";
 import { User } from "lucide-react";
 import { useChat } from "../hooks/useChat";
 import api from "@/app/lib/axios";
+import { useRouter } from "next/navigation";
 
 export default function ConversationPage() {
+  const router = useRouter()
   const { data: scenario, isLoading, isError } = useScenario();
 
   const {
@@ -19,6 +21,7 @@ export default function ConversationPage() {
     audioRef,
     audioUrl,
   } = useChat({ uploadEndpoint: "/conversation/turn" });
+
 
   // 🟢 Initialize conversation (backend state)
   useEffect(() => {
@@ -73,7 +76,15 @@ export default function ConversationPage() {
           >
             {isRecording ? "Stop" : "Record"}
           </Button>
+                    {/* 🧭 Finish Conversation Button */}
         </div>
+          <Button
+            onClick={() => router.push("/evaluation")}
+            variant="secondary"
+            className="mt-6"
+          >
+            Finish Conversation
+          </Button>
 
         {/* Hidden audio element */}
         <audio ref={audioRef} className="hidden">

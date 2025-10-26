@@ -69,6 +69,9 @@ def process_conversation_turn(client: OpenAI, user_audio_path: Path):
     state["last_generated"] = f"tts/turn_{conversation['turn_counter'] + 1}.wav"
     conversation["turn_counter"] += 1
 
+    conversation["conversation"].append({"role": "assistant", "content": ai_text})
+    conversation["emotions"].append(emotion)
+
     return {
         "status": "success",
         "user_text": user_text,
