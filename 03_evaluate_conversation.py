@@ -64,15 +64,33 @@ def _llm_call(messages: List[Dict[str, Any]], *, model: str = DEFAULT_MODEL, max
             # backoff with jitter
             time.sleep(delay * (1.5 ** attempt) * (1 + random.random() * 0.3))
 
-def _format_conversation_for_prompt(conversation: List[Dict[str, str]]) -> str:
+def _format_conversation_for_prompt(conversation: List[Dict[str, str]], emotions: Optional[List[str]] = None) -> str:
+    """
+    Format a conversation into a readable transcript string.
+    If emotions are provided, each user message will include its corresponding emotional tone.
+    """
     lines = []
+    emotion_index = 0
+
     for i, msg in enumerate(conversation, 1):
         role = msg.get("role", "").upper()
         content = msg.get("content", "")
-        lines.append(f"{i:02d} [{role}] {content}")
+
+        # Add the base message line
+        line = f"{i:02d} [{role}] {content}"
+
+        # If it's a user message and emotions list is provided, append corresponding emotion
+        if role.lower() == "user" and emotions and emotion_index < len(emotions):
+            emotion = emotions[emotion_index]
+            line += f"\n     ↳ **Tone/Emotion:** {emotion}"
+            emotion_index += 1
+
+        lines.append(line)
+
     return "\n".join(lines)
 
-def _build_eval_prompt(conversation: List[Dict[str, str]], onboarding: Optional[Dict[str, Any]]) -> str:
+
+def _build_eval_prompt(conversation: List[Dict[str, str]], emotions: List[str], onboarding: Optional[Dict[str, Any]]) -> str:
     """
     Build a rubric-based evaluation prompt. The model should return JSON.
     """
@@ -82,17 +100,18 @@ def _build_eval_prompt(conversation: List[Dict[str, str]], onboarding: Optional[
         ai_role = onboarding.get("ai_role") or "stakeholder"
         sc = onboarding.get("scenario") or ""
         scenario_bits = f"User role: {role}. AI role: {ai_role}. Scenario: {sc}.\n"
-    convo_block = _format_conversation_for_prompt(conversation)
+    convo_block = _format_conversation_for_prompt(conversation, emotions)
     return (
         "You are a conversation coach evaluating a practice dialog.\n"
         + scenario_bits +
-        "Assess the AI assistant on these dimensions (0–5, half-points allowed):\n"
+        "Assess the user on these dimensions (0-5, half-points allowed):\n"
         "1) Empathy & Tone\n"
         "2) Clarity & Brevity\n"
         "3) Relevance to Scenario\n"
         "4) Questioning & Guidance\n"
         "5) Professionalism & Non-defensiveness\n\n"
         "Return STRICT JSON with this schema (no extra text):\n"
+        "Please consider the emotional tone carefully when evaluating scores.\n"
         "{\n"
         '  "rubric_version": "v1.0",\n'
         '  "overall_score": <0-5 number>,\n'
@@ -122,6 +141,7 @@ def evaluate_conversation(convo_result: Dict[str, Any], onboarding: Optional[Dic
     { 'conversation': [{'role': 'user'|'assistant', 'content': str}, ...], 'emotions': [...] }
     """
     conversation = convo_result.get("conversation") or []
+    emotions = convo_result.get("emotions") or []
     if not conversation:
         # Heuristic fallback
         return EvaluationResult(
@@ -134,7 +154,7 @@ def evaluate_conversation(convo_result: Dict[str, Any], onboarding: Optional[Dic
             tokens_hint=0,
         )
 
-    prompt = _build_eval_prompt(conversation, onboarding)
+    prompt = _build_eval_prompt(conversation, emotions, onboarding)
     sys_msg = {"role": "system", "content": "Return STRICT JSON that matches the requested schema. No prose."}
     user_msg = {"role": "user", "content": prompt}
 

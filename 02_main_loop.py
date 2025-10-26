@@ -6,13 +6,60 @@ import os
 import sounddevice as sd
 import soundfile as sf
 import json
+from queue import Queue
 from typing import List, Dict, Optional
+import re
+import threading
+import time
+from tts_generator import b64
 
 BOSON_API_KEY = os.getenv("BOSON_API_KEY")
 client = OpenAI(api_key=BOSON_API_KEY, base_url="https://hackathon.boson.ai/v1")
 
 import time
 from datetime import datetime
+
+
+reference_transcript = {
+    "afraid": "What was that sound",
+    "angry": "Excuse me, why did you do that?",
+    "disgusted": "Ew, that's so gross!",
+    "happy": "What a beautiful moment.",
+    "melancholic": "I miss, what used to be.",
+    "sad": "Nothing... seems to matter anymore",
+    "surprised": "I didn't see that coming!",
+    "calm": "Just me, the breeze, and silence."
+}
+
+
+
+def retry_with_exponential_backoff(
+    func,
+    max_retries=5,
+    initial_delay=1,
+    exponential_base=2,
+    jitter=True,
+):
+    """Retry a function with exponential backoff."""
+    def wrapper(*args, **kwargs):
+        num_retries = 0
+        delay = initial_delay
+        
+        while True:
+            try:
+                return func(*args, **kwargs)
+            except RateLimitError as e:
+                num_retries += 1
+                if num_retries > max_retries:
+                    raise Exception(f"Max retries ({max_retries}) exceeded: {e}")
+                
+                delay *= exponential_base * (1 + jitter * (0.5 - time.time() % 1))
+                print(f"⏳ Rate limit hit. Retrying in {delay:.2f} seconds... (attempt {num_retries}/{max_retries})")
+                time.sleep(delay)
+            except Exception as e:
+                raise e
+    
+    return wrapper
 
 # Toggle with env: CANDIDLY_DEBUG=0 to silence
 DEBUG = os.getenv("CANDIDLY_DEBUG", "1") not in ("0", "false", "False", "")
@@ -71,6 +118,7 @@ class ConversationalistAgent:
         self.client = client
         self.system_prompt = system_prompt
     
+    @retry_with_exponential_backoff
     def generate_response(self, conversation_history: List[Dict[str, str]]) -> str:
         """Given conversation history, generate the next assistant message"""
         system_prompt = self.system_prompt or (
@@ -83,13 +131,6 @@ class ConversationalistAgent:
         )
         
         messages = [{"role": "system", "content": system_prompt}] + conversation_history
-        
-        # resp = self.client.chat.completions.create(
-        #     model="Qwen3-32B-non-thinking-Hackathon",
-        #     messages=messages,
-        #     max_tokens=50,
-        #     temperature=0.7,
-        # )
 
         resp = api_call_with_logs(
             "Conversationalist.chat",
@@ -104,7 +145,7 @@ class ConversationalistAgent:
         print("🧠 Model response (raw):\n", response_text)
 
         if isinstance(response_text, str):
-            log(f"↳ Conversationalist.text: {response_text[:120]}{'…' if len(response_text)>120 else ''}")
+            # log(f"↳ Conversationalist.text: {response_text[:120]}{'…' if len(response_text)>120 else ''}")
             return response_text.strip()
         
         # Handle complex response formats
@@ -117,6 +158,58 @@ class ConversationalistAgent:
         text = str(response_text)
         log(f"↳ Conversationalist.other: {text[:120]}{'…' if len(text)>120 else ''}")
         return text
+    
+    @retry_with_exponential_backoff
+    def extract_emotion(self, conversation_history: list) -> str:
+        """
+        Generate a one-word emotion label describing the AI's tone.
+        If base case (one system + one user message saying "Generate the first complaint, do not output anything else"),
+        infer emotion from system prompt only.
+        Otherwise, predict the next emotional state of the assistant based on the last user-assistant exchange.
+        """
+
+        emotions = ["happy", "angry", "sad", "afraid", "disgusted", "melancholic", "surprised", "calm"]
+
+        # --- Otherwise: predict next state based on last user–assistant exchange ---
+        user_last = ""
+        ai_text = ""
+
+        # Find the last assistant and user messages in order
+        for msg in reversed(conversation_history):
+            if msg["role"] == "assistant" and not ai_text:
+                ai_text = msg["content"]
+            elif msg["role"] == "user" and not user_last:
+                user_last = msg["content"]
+            if ai_text and user_last:
+                break
+
+        # If we don’t have both, fallback gracefully
+        default_emotion = "angry"
+        if not (ai_text and user_last):
+            return default_emotion
+
+        system_prompt = (
+            "You are an emotion classifier. Given the last exchange between the user and assistant, "
+            "predict the *next emotional state* of the assistant. "
+            "Output ONE WORD ONLY (lowercase). "
+            f"CHOOSE FROM THIS LIST ONLY AND NOTHING ELSE: {', '.join(emotions)}."
+        )
+
+        dialogue_context = f"User: {user_last}\nAssistant: {ai_text}"
+
+        resp = self.client.chat.completions.create(
+            model="Qwen3-32B-non-thinking-Hackathon",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": dialogue_context},
+            ],
+            max_tokens=5,
+            temperature=0.0,
+        )
+
+        emotion = resp.choices[0].message.content.strip().lower()
+        emotion = re.findall(r'\b[a-z]+\b', emotion)
+        return emotion[0] if emotion[0] in emotions else default_emotion
 
 import re
 
@@ -132,8 +225,9 @@ class TTSAgent:
     
     def __init__(self, client: OpenAI):
         self.client = client
+
     
-    def synthesize_speech(self, text: str, output_path: str) -> str:
+    def synthesize_speech(self, text: str, output_path: str, emotion: str) -> str:
         """Convert text to speech and save to file"""
         log(f"→ TTS.synthesize len(text)={len(text)} → {output_path}")
         system = (
@@ -146,12 +240,22 @@ class TTSAgent:
         resp = self.client.chat.completions.create(
             model="higgs-audio-generation-Hackathon",
             messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": text}
-            ],
-            max_completion_tokens=4096,
-            temperature=1.0,
-            top_p=0.95,
+                    {"role": "system", "content": system},
+                    # # Turn 1: Establish the Reference Voice
+                    {"role": "user", "content": reference_transcript[emotion]},
+                    {"role": "assistant",
+                        "content": [{
+                            "type": "input_audio",
+                            "input_audio": {"data": b64("./emotion_audio/belinda/" + emotion + "_10.wav"), "format": "wav"}
+                        }],
+                    },
+                    # Turn 2: New Content with Tone Instruction
+                    {"role": "user", "content": text},
+                ],
+            modalities=["text", "audio"],
+            max_completion_tokens=512,
+            temperature=0.8,
+            top_p=0.9,
             stream=False,
             stop=["<|eot_id|>", "<|end_of_text|>", "<|audio_eos|>"],
             extra_body={"top_k": 50},
@@ -376,7 +480,8 @@ class UserToneAnalyzerAgent:
         """Encode audio file to base64 format."""
         with open(file_path, "rb") as audio_file:
             return base64.b64encode(audio_file.read()).decode("utf-8")
-        
+
+    @retry_with_exponential_backoff 
     def analyze_tone(self, audio_path: str) -> str:
         """Return a short tone/sentiment description of the audio."""
         log(f"→ Tone.analyze file={audio_path}")
@@ -400,7 +505,7 @@ class UserToneAnalyzerAgent:
                     ],
                 },
             ],
-            max_tokens=512,
+            max_tokens=1024,
             temperature=0.2,
         )
         content = resp.choices[0].message.content
@@ -408,6 +513,16 @@ class UserToneAnalyzerAgent:
         tone_clean = strip_think(tone)
         log(f"← Tone.analyze: {tone_clean}")
         return str(tone_clean)
+    
+def analyze_tone_background(utaa, audio_path, result_queue, turn_num):
+    """Background worker function for tone analysis"""
+    try:
+        print(f"🎭 [Background] Starting tone analysis for turn {turn_num}...")
+        tone_sentiment = utaa.analyze_tone(audio_path)
+        result_queue.put((turn_num, tone_sentiment))
+    except Exception as e:
+        print(f"✗ [Background] Tone analysis failed: {e}")
+        result_queue.put((turn_num, None))
 
 def run_conversation_cycle(num_turns: int = 3, recording_duration: int = 5, system_prompt: Optional[str] = None):
     """
@@ -432,10 +547,17 @@ def run_conversation_cycle(num_turns: int = 3, recording_duration: int = 5, syst
     print("CONVERSATION SYSTEM STARTED (AI first)")
     print("="*60)
 
+    emotions = []
+    tone_threads = []
+    tone_results_queue = Queue()
+
+    res = []
+
     for turn in range(num_turns):
         print(f"\n{'='*60}")
         print(f"TURN {turn + 1}: AI RESPONSE")
         print(f"{'='*60}")
+        emotion = conversationalist.extract_emotion(conversation)
 
         # A) Assistant generates response (first turn is the opener)
         print("💭 Generating response...")
@@ -450,6 +572,10 @@ def run_conversation_cycle(num_turns: int = 3, recording_duration: int = 5, syst
 
         # If this was the final turn, stop before asking the user to speak.
         if turn == num_turns - 1:
+            res.append({
+                "ai_text": ai_text,
+                "emotion": emotion
+            })
             break
 
         print(f"\n{'='*60}")
@@ -461,21 +587,40 @@ def run_conversation_cycle(num_turns: int = 3, recording_duration: int = 5, syst
         stt.record_audio(recording_duration, user_audio_path)
         print("📝 Transcribing...")
         user_text = stt.transcribe_audio(user_audio_path, backend="omni")
-        tone_sentiment = utaa.analyze_tone(user_audio_path)
-        emotions.append(tone_sentiment)
-
+        tone_thread = threading.Thread(
+            target=analyze_tone_background,
+            args=(utaa, user_audio_path, tone_results_queue, turn + 1),
+            daemon=True
+        )
+        tone_thread.start()
+        tone_threads.append(tone_thread)
         conversation.append({"role": "user", "content": user_text})
+        res.append({
+            "user_text": user_text,
+            "ai_text": ai_text,
+            "emotion": emotion
+        })
 
     print("\n" + "="*60)
     print("CONVERSATION COMPLETE")
     print("="*60)
+    for thread in tone_threads:
+        thread.join()
+    
+    # Collect results from queue
+    while not tone_results_queue.empty():
+        turn_num, tone_sentiment = tone_results_queue.get()
+        if tone_sentiment:
+            emotions.append(tone_sentiment)
+            
     print("\n📋 Full conversation history:")
     for i, msg in enumerate(conversation):
         role_emoji = "🤖" if msg['role'] == "assistant" else "👤"
         print(f"{i+1}. {role_emoji} [{msg['role'].upper()}]: {msg['content']}")
     print("\n🧭 Emotions:", emotions)
 
-    return {"conversation": conversation, "emotions": emotions}
+    # return {"conversation": conversation, "emotions": emotions}
+    return res
 
 
 
@@ -498,10 +643,10 @@ def run_conversation_from_onboarding(onboarding: dict, *, num_turns: int = 3, re
     """AI initiates. Uses onboarding to build the system prompt."""
     system_prompt = build_system_prompt_from_onboarding(onboarding)
 
-    conv = ConversationalistAgent(client, system_prompt=system_prompt)
+    conversationalist = ConversationalistAgent(client, system_prompt=system_prompt)
     tts = TTSAgent(client)
     stt = STTAgent(client)
-    emo = UserToneAnalyzerAgent(client)
+    utaa = UserToneAnalyzerAgent(client)
 
     conversation: List[Dict[str, str]] = []
     emotions: List[str] = []
@@ -512,32 +657,72 @@ def run_conversation_from_onboarding(onboarding: dict, *, num_turns: int = 3, re
 
     os.makedirs("data", exist_ok=True)
 
+    emotions = []
+    tone_threads = []
+    tone_results_queue = Queue()
+
+    res = []
+    output_dir = "data/test_wav"
+    os.makedirs(output_dir, exist_ok=True)
+
+
     for turn in range(1, num_turns + 1):
-        # A) Assistant initiates/responds first
-        assistant_text = conv.generate_response(conversation_history=conversation)
-        print(f"\n🤖 Assistant: {assistant_text}")
-        conversation.append({"role": "assistant", "content": assistant_text})
+        # A) Assistant generates response (first turn is the opener)
+        print("💭 Generating response...")
+        ai_text = conversationalist.generate_response(conversation)
+        print(f"📝 AI: {ai_text}")
+        emotion = conversationalist.extract_emotion(conversation)
+        conversation.append({"role": "assistant", "content": ai_text})
 
-        # Optional TTS
-        # tts_path = tts.synthesize_speech(assistant_text, output_path=f"data/reply_turn_{turn}.wav")
-        # tts.play_audio(tts_path)
+        # B) (Optional) TTS
+        audio_path = os.path.join(output_dir, f"ai_response_{turn + 1}.wav")
+        print(f"😡 Emotion = {emotion}")
+        tts.synthesize_speech(ai_text, audio_path, emotion)
+        tts.play_audio(audio_path)
 
-        # If final turn, do not ask the user to speak
-        if turn == num_turns:
+        # If this was the final turn, stop before asking the user to speak.
+        if turn == num_turns - 1:
+            res.append({
+                "ai_text": ai_text,
+                "emotion": emotion
+            })
             break
 
-        # B) User speaks next
-        print(f"\n🎙️ Your turn ({turn}/{num_turns-1} remaining)…")
-        audio_path = stt.record_audio(duration=recording_duration, output_path=f"data/mic_turn_{turn}.wav")
-        user_text = stt.transcribe_audio(audio_path, backend="omni")
-        print("👤 You:", user_text)
+        print(f"\n{'='*60}")
+        print(f"TURN {turn + 1}: USER INPUT")
+        print(f"{'='*60}")
 
-        emotions.append(emo.analyze_tone(audio_path))
+        # C) Record + transcribe + tone
+        user_audio_path = os.path.join(output_dir, f"user_input_{turn + 1}.wav")
+        stt.record_audio(recording_duration, user_audio_path)
+        print("📝 Transcribing...")
+        user_text = stt.transcribe_audio(user_audio_path, backend="omni")
+        tone_thread = threading.Thread(
+            target=analyze_tone_background,
+            args=(utaa, user_audio_path, tone_results_queue, turn + 1),
+            daemon=True
+        )
+        tone_thread.start()
+        tone_threads.append(tone_thread)
         conversation.append({"role": "user", "content": user_text})
+        res.append({
+            "user_text": user_text,
+            "ai_text": ai_text,
+            "emotion": emotion
+        })
 
     print("\n" + "="*60)
     print("CONVERSATION COMPLETE")
     print("="*60)
+    for thread in tone_threads:
+        thread.join()
+    
+    # Collect results from queue
+    while not tone_results_queue.empty():
+        turn_num, tone_sentiment = tone_results_queue.get()
+        if tone_sentiment:
+            emotions.append(tone_sentiment)
+            
     print("\n📋 Full conversation history:")
     for i, msg in enumerate(conversation):
         role_emoji = "🤖" if msg['role'] == "assistant" else "👤"

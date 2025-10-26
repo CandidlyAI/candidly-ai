@@ -61,7 +61,7 @@ def main():
         sys.exit(5)
 
     # Optional knobs via env; defaults: 3 turns, 5 seconds per recording
-    num_turns = int(os.getenv("CONVO_TURNS", "3"))
+    num_turns = int(os.getenv("CONVO_TURNS", "4"))
     rec_secs  = int(os.getenv("CONVO_REC_SEC", "7"))
 
     # Launch the conversation
