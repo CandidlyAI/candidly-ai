@@ -5,63 +5,18 @@ import { Button } from "@/components/ui/button";
 import { useUploadAudio } from "@/app/hooks/use-upload-audio";
 import { blobToWav } from "@/app/lib/encodeWav";
 import { usePollAudio } from "../hooks/usePollAudio";
+import { useChat } from "../hooks/useChat";
+import { useRouter } from "next/navigation"; // ✅ Import router
 
 export default function LandingPage() {
-  const [isRecording, setIsRecording] = useState(false);
-  const [isWaitingForChatBot, setIsWaitingForChatBot] = useState(false)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const uploadAudio = useUploadAudio();
-
-  const { data: audioUrl, isFetching } = usePollAudio("recording.wav", isWaitingForChatBot)
-
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const router = useRouter(); // ✅ Initialize router
+  const { isRecording, stopRecording, startRecording, uploadAudio, audioRef, audioUrl } = useChat({ uploadEndpoint: "/onboarding" })
   
-  // Auto-play when audio URL changes
   useEffect(() => {
-    if (audioUrl && audioRef.current) {
-      audioRef.current.load();
-      audioRef.current.play().then(() => {
-        setIsWaitingForChatBot(false)
-      }).catch(() => {
-        console.warn("Autoplay blocked by browser.");
-      });
+    if (uploadAudio?.data?.is_done) {
+      router.push("/conversation");
     }
-  }, [audioUrl]);
-
-  async function startRecording() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      chunksRef.current = [];
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) chunksRef.current.push(event.data);
-      };
-
-      mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(chunksRef.current, { type: "audio/webm" });
-        const wavBlob = await blobToWav(audioBlob); // Convert to WAV
-        uploadAudio.mutate(wavBlob);
-      };
-
-      mediaRecorder.start();
-      setIsRecording(true);
-    } catch (err) {
-      console.error("Microphone error:", err);
-      alert("Unable to access microphone");
-    }
-  }
-
-  console.log(isWaitingForChatBot)
-
-  function stopRecording() {
-    mediaRecorderRef.current?.stop();
-    mediaRecorderRef.current?.stream.getTracks().forEach((track) => track.stop());
-    setIsRecording(false);
-    setIsWaitingForChatBot(true)
-  }
+  }, [uploadAudio?.data?.is_done, router]);
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-background">
@@ -93,6 +48,9 @@ export default function LandingPage() {
           <p className="mt-4 text-red-500">❌ Upload failed.</p>
         )}
       </div>
+        <audio ref={audioRef} className="hidden">
+          {audioUrl && <source src={audioUrl} type="audio/wav" />}
+        </audio>
     </main>
   );
 }
