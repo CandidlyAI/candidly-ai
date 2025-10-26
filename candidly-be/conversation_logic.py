@@ -21,11 +21,14 @@ TTS_DIR = DATA_DIR / "tts"
 TTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def build_system_prompt_from_onboarding(data: dict) -> str:
-    user_role = data.get("role", "user")
-    ai_role = data.get("ai_role", "stakeholder")
-    scenario = data.get("scenario", "")
+def build_system_prompt_from_onboarding() -> str:
+    onboarding_info = state["onboarding"].onboarding_info
+    user_role = onboarding_info.user_role
+    ai_role = onboarding_info.ai_role
+    scenario = onboarding_info.scenario
+
     scenario_line = f" Scenario: {scenario}." if scenario else ""
+    print("user_role: ", user_role, " ai_role: ", ai_role, " scenario: ", scenario)
     return (
         "You are roleplaying a difficult conversation coach. "
         f"Play the part of the '{ai_role}'. The human is a '{user_role}'.{scenario_line} "

@@ -38,7 +38,7 @@ def speak_text(reply_text: str) -> str | None:
     """Generate + (attempt to) play TTS for the assistant’s reply. Returns audio path or None."""
     try:
         state["onboarding"].speak_counter += 1
-        turn = f"turn_{state["onboarding"].speak_counter}"
+        turn = f"turn_{state['onboarding'].speak_counter}"
         tts_dir = DATA_DIR / "tts"
         tts_dir.mkdir(parents=True, exist_ok=True)
         out_base = str(tts_dir / turn)
@@ -115,7 +115,7 @@ def onboard(message: str):
         is_done = parsed.get("is_done")
 
         if is_done:
-            state["onboarding"].onboarding_info = OnboardingInfo( parsed.get("ai_role", ""),  parsed.get("role", ""),  parsed.get("scenario", ""))
+            state["onboarding"].onboarding_info = OnboardingInfo(parsed.get("ai_role", ""),  parsed.get("role", ""),  parsed.get("scenario", ""))
             return is_done
 
         audio_path = speak_text(next_prompt)

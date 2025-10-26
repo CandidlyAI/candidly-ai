@@ -46,4 +46,6 @@ conversation = {
     "audio_ready": False,
     "last_generated": None,
     "system_prompt": "",
+    "conversation": [],  # list of {role, content}
+    "emotions": [],      # list of emotion strings
 }

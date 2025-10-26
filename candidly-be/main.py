@@ -65,13 +65,13 @@ def get_scenario():
     return {"scenario": state["onboarding"].onboarding_info.scenario }
 
 @app.post("/conversation/reset")
-def reset_conversation(onboarding: dict):
+def reset_conversation():
     """
     Resets the conversation state, building a system prompt from onboarding data.
     """
     conversation["messages"].clear()
     conversation["turn_counter"] = 0
-    conversation["system_prompt"] = build_system_prompt_from_onboarding(onboarding)
+    conversation["system_prompt"] = build_system_prompt_from_onboarding()
     conversation["messages"].append({"role": "system", "content": conversation["system_prompt"]})
     conversation["audio_ready"] = False
     conversation["last_generated"] = None
