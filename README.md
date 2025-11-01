@@ -25,6 +25,12 @@
 
 ## Demo
 
+#### Web Mode
+[▶️ Watch the demo](assets/candidlyAI_fe_demo.mp4)
+
+#### CLI Mode
+[▶️ Watch the demo](assets/candidlyAI_demo.mp4)
+
 ---
 
 ## Features
